@@ -579,14 +579,22 @@ class EOSDriver(NetworkDriver):
                 }
                 yield name, values
 
-        sh_version_out = self.device.run_commands(["show version"])
-        is_veos = sh_version_out[0]["modelName"].lower() == "veos"
-        commands = ["show environment cooling", "show environment temperature"]
+        commands = [
+            "show version",
+            "show environment cooling",
+            "show environment temperature",
+        ]
+        try:
+            version, fans_output, temp_output = self.device.run_commands(commands)
+        except pyeapi.eapilib.CommandError:
+            # FN 0039
+            commands[1] = "show system environment cooling"
+            version, fans_output, temp_output = self.device.run_commands(commands)
+
+        is_veos = version["modelName"].lower() == "veos"
         if not is_veos:
-            commands.append("show environment power")
-            fans_output, temp_output, power_output = self.device.run_commands(commands)
-        else:
-            fans_output, temp_output = self.device.run_commands(commands)
+            power_output = self.device.run_commands(["show environment power"])[0]
+
         environment_counters = {"fans": {}, "temperature": {}, "power": {}, "cpu": {}}
         cpu_output = self.device.run_commands(
             ["show processes top once"], encoding="text"
@@ -1326,7 +1334,16 @@ class EOSDriver(NetworkDriver):
         snmp_dict = {"chassis_id": "", "location": "", "contact": "", "community": {}}
 
         commands = ["show snmp chassis", "show snmp location", "show snmp contact"]
-        snmp_config = self.device.run_commands(commands, encoding="json")
+        try:
+            snmp_config = self.device.run_commands(commands, encoding="json")
+        except pyeapi.eapilib.CommandError:
+            # FN 0039
+            commands = [
+                "show snmp v2-mib chassis",
+                "show snmp v2-mib location",
+                "show snmp v2-mib contact",
+            ]
+            snmp_config = self.device.run_commands(commands, encoding="json")
         for line in snmp_config:
             for k, v in line.items():
                 if k == "chassisId":
@@ -1361,7 +1378,12 @@ class EOSDriver(NetworkDriver):
         users = {}
 
         commands = ["show user-account"]
-        user_items = self.device.run_commands(commands)[0].get("users", {})
+        try:
+            user_items = self.device.run_commands(commands)[0].get("users", {})
+        except pyeapi.eapilib.CommandError:
+            # FN 0039
+            commands = ["show users accounts"]
+            user_items = self.device.run_commands(commands)[0].get("users", {})
 
         for user, user_details in user_items.items():
             user_details.pop("username", "")
@@ -1452,12 +1474,12 @@ class EOSDriver(NetworkDriver):
             traceroute_raw_output = self.device.run_commands(commands, encoding="text")[
                 -1
             ].get("output")
-        except CommandErrorException:
-            return {
-                "error": "Cannot execute traceroute on the device: {}".format(
-                    commands[0]
-                )
-            }
+        except pyeapi.eapilib.CommandError:
+            # FN 0039
+            commands[0] = "cli vrf {vrf}".format(vrf=vrf)
+            traceroute_raw_output = self.device.run_commands(commands, encoding="text")[
+                -1
+            ].get("output")
 
         hop_regex = "".join(_HOP_ENTRY + _HOP_ENTRY_PROBE * probes)
 
@@ -1619,7 +1641,15 @@ class EOSDriver(NetworkDriver):
                 commands.append("show ipv6 bgp neighbors %s vrf all" % neighbor_address)
                 summary_commands.append("show ipv6 bgp summary vrf all")
 
-        raw_output = self.device.run_commands(commands, encoding="text")
+        try:
+            raw_output = self.device.run_commands(commands, encoding="text")
+        except pyeapi.eapilib.CommandError:
+            # FN 0039
+            if not neighbor_address:
+                commands[1] = "show ipv6 bgp peers vrf all"
+            else:
+                commands[0] = "show ipv6 bgp peers %s vrf all" % neighbor_address
+            raw_output = self.device.run_commands(commands, encoding="text")
         bgp_summary = self.device.run_commands(summary_commands, encoding="json")
 
         bgp_detail_info = {}
@@ -1874,7 +1904,12 @@ class EOSDriver(NetworkDriver):
             command += " source {}".format(source)
 
         commands.append(command)
-        output = self.device.run_commands(commands, encoding="text")[-1]["output"]
+        try:
+            output = self.device.run_commands(commands, encoding="text")[-1]["output"]
+        except pyeapi.eapilib.CommandError:
+            # FN 0039
+            commands[0] = "cli vrf {vrf}".format(vrf=vrf)
+            output = self.device.run_commands(commands, encoding="text")[-1]["output"]
 
         if "connect:" in output:
             ping_dict["error"] = output
